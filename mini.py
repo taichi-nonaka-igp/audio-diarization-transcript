@@ -1,13 +1,15 @@
-import torch
-from torch import Tensor, device as TorchDevice, dtype as TorchDtype
-from transformers import WhisperProcessor, WhisperForConditionalGeneration
-from pyannote.audio import Pipeline, Audio
-from pyannote.core import Annotation
 from pathlib import Path
 
+import torch
+from pyannote.audio import Audio, Pipeline
+from pyannote.core import Annotation
+from torch import Tensor
+from torch import device as TorchDevice
+from torch import dtype as TorchDtype
+from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
 # 文字起こし対象の音声ファイル
-audio_file: Path = Path("./short.wav" )
+audio_file: Path = Path(r"C:\Whisper\audio-diarization-transcript\レコーディング.wav")
 # 話者分離を行うモデル
 pyannote_model: str = "pyannote/speaker-diarization-3.1"
 # 文字起こしを行うモデル
@@ -20,12 +22,18 @@ dtype: TorchDtype = torch.float32
 # PyannoteパイプラインとWhisperモデル/プロセッサ、Audioハンドラをロード
 pipeline: Pipeline = Pipeline.from_pretrained(pyannote_model).to(device)
 processor: WhisperProcessor = WhisperProcessor.from_pretrained(transcription_model)
-model: WhisperForConditionalGeneration = WhisperForConditionalGeneration.from_pretrained(transcription_model, torch_dtype=dtype).to(device).eval()
-audio_handler: Audio = Audio(sample_rate=16000, mono=True) 
+model: WhisperForConditionalGeneration = (
+    WhisperForConditionalGeneration.from_pretrained(
+        transcription_model, torch_dtype=dtype
+    )
+    .to(device)
+    .eval()
+)
+audio_handler: Audio = Audio(sample_rate=16000, mono=True)
 
 
 # --- 2. 話者分離を実行 ---
-diarization: Annotation = pipeline(audio_file, num_speakers = 2) 
+diarization: Annotation = pipeline(audio_file, num_speakers=2)
 
 # diarization.itertracks()で各発話区間(segment)と話者ラベル(speaker)を取得
 for segment, _, speaker in diarization.itertracks(yield_label=True):
@@ -34,19 +42,25 @@ for segment, _, speaker in diarization.itertracks(yield_label=True):
 
     # transformers版Whisperで文字起こしを実行
     input_features: Tensor = processor(
-        waveform.squeeze().numpy().astype("float32"), # 波形をnumpy float32配列に
-        sampling_rate=sample_rate,                 # サンプルレート指定
-        return_tensors="pt"                      # PyTorchテンソルで返す
-    ).input_features.to(device, dtype=dtype)       # モデルと同じデバイス・データ型へ
+        waveform.squeeze().numpy().astype("float32"),  # 波形をnumpy float32配列に
+        sampling_rate=sample_rate,  # サンプルレート指定
+        return_tensors="pt",  # PyTorchテンソルで返す
+    ).input_features.to(
+        device, dtype=dtype
+    )  # モデルと同じデバイス・データ型へ
 
     # 2. モデルでIDシーケンスを生成 (勾配計算なし)
     with torch.no_grad():
         # 日本語を指定して文字起こしタスクを実行
         predicted_ids: Tensor = model.generate(
             input_features,
-            forced_decoder_ids=processor.get_decoder_prompt_ids(language="ja", task="transcribe")
+            forced_decoder_ids=processor.get_decoder_prompt_ids(
+                language="ja", task="transcribe"
+            ),
         )
 
     # 3. IDシーケンスをテキストにデコード
-    text: str = processor.batch_decode(predicted_ids, skip_special_tokens=True)[0].strip()
+    text: str = processor.batch_decode(predicted_ids, skip_special_tokens=True)[
+        0
+    ].strip()
     print(f"[{segment.start:03.1f}s - {segment.end:03.1f}s] {speaker}: {text}")

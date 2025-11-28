@@ -1,16 +1,18 @@
-import torch
-from transformers import WhisperProcessor, WhisperForConditionalGeneration
-from pyannote.audio import Pipeline, Audio
-from pyannote.core import Segment  # Segmentオブジェクト作成のためインポート
-from pathlib import Path
-import warnings
-import sys
-import logging
-from typing import Optional, Any, Dict, Tuple
+import argparse
 import csv
 import datetime
-import argparse
-import torchaudio  # ファイル長取得のためインポート
+import logging
+import sys
+import warnings
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
+# import torchaudio  # ファイル長取得のためインポート
+import soundfile as sf  # 追加
+import torch
+from pyannote.audio import Audio, Pipeline
+from pyannote.core import Segment  # Segmentオブジェクト作成のためインポート
+from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
 # --- ロギング設定 ---
 logging.basicConfig(
@@ -57,7 +59,7 @@ class AudioProcessor:
         transcription_model_id: str,
         pyannote_model_id: str,
         target_sample_rate: int = 16000,
-        min_segment_duration: float = 0.02,
+        min_segment_duration: float = 0.3,
     ):
         """AudioProcessorを初期化します。"""
         logging.info(f"Initializing AudioProcessor for file: {audio_file}")
@@ -159,31 +161,21 @@ class AudioProcessor:
         )
         return handler
 
-    # ★追加: ファイル長取得メソッド
     def _get_audio_duration(self) -> float:
-        """音声ファイルの合計長さを秒単位で取得します。"""
+        """音声ファイルの合計長さを秒で取得（soundfile版）。"""
         try:
-            info = torchaudio.info(str(self.audio_file))
-            # sample_rate が 0 の場合 ZeroDivisionError になるためチェック
-            if info.sample_rate <= 0:
-                logging.error(
-                    f"Audio file has invalid sample rate ({info.sample_rate}). Cannot determine duration."
-                )
-                return float("inf")
-            duration = info.num_frames / info.sample_rate
-            logging.info(f"Detected audio duration: {duration:.3f} seconds.")
-            return duration
+            with sf.SoundFile(str(self.audio_file)) as f:
+                return len(f) / f.samplerate
         except FileNotFoundError:
-            # __init__でチェック済みだが念のため
             logging.error(
                 f"Audio file not found when trying to get duration: {self.audio_file}"
             )
             raise
         except Exception as e:
             logging.error(
-                f"Could not determine audio duration using torchaudio: {e}. Cropping might fail for segments near the end."
+                f"Could not determine audio duration via soundfile: {e}. "
+                "Cropping might fail for segments near the end."
             )
-            # 処理を続けるために inf を返す（チェックが無効になる）
             return float("inf")
 
     def diarize(self, known_num_speakers: Optional[int] = None) -> Optional[Any]:
@@ -545,8 +537,10 @@ class AudioProcessor:
                 speaker: str
                 for i, (segment, _track_id, speaker) in enumerate(sorted_segments):
                     segment_index = i + 1
+                    progress = (segment_index / len(sorted_segments)) * 100
                     logging.info(
-                        f"--- Processing segment {segment_index}/{len(sorted_segments)} [{segment.start:.2f}s - {segment.end:.2f}s] Speaker: {speaker} ---"
+                        f"[{segment_index}/{len(sorted_segments)}] ({progress:.1f}%) "
+                        f"Processing segment [{segment.start:.2f}s - {segment.end:.2f}s] Speaker: {speaker}"
                     )
 
                     # 1. セグメント処理 (文字起こし含む)
