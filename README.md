@@ -7,9 +7,22 @@
 * **Python:** 3.11
 * **主要ライブラリ:** PyTorch, Transformers, pyannote.audio 4.x, torchaudio, torchcodec (詳細は `pyproject.toml` を参照し、`uv sync` でインストールされます)
 * **システム要件:** FFmpeg（m4a 変換および pyannote.audio 4.x の音声読み込みに使用）
+  * **Windows:** torchcodec 互換のため **FFmpeg 7.x の shared ビルド**が必要です（FFmpeg 8 は非対応）。`scripts/setup-windows.ps1` で自動セットアップできます。
 
 
 ## 環境構築
+
+### Windows（推奨: 自動セットアップ）
+
+PowerShell でプロジェクトルートから以下を実行します。
+
+```powershell
+.\scripts\setup-windows.ps1
+```
+
+手動で入れる場合は **uv**、**Python 3.11**、**FFmpeg 7.1 shared**（例: `BtbN.FFmpeg.GPL.Shared.7.1`）をインストールし、`uv sync` を実行してください。FFmpeg 8（Gyan.FFmpeg 等）だけでは pyannote の音声デコードが失敗することがあります。
+
+### 共通手順
 
 1.  **uv の導入:**
     * Pythonのパッケージ管理ツール `uv` をインストールします。導入方法は公式ドキュメントを参照してください: [Installing uv](https://docs.astral.sh/uv/getting-started/installation/)

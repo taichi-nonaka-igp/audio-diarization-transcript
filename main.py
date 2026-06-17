@@ -1,3 +1,5 @@
+import win_dll_setup  # noqa: F401  # Windows: FFmpeg DLL paths for torchcodec
+
 import argparse
 import csv
 import datetime

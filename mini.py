@@ -1,3 +1,5 @@
+import win_dll_setup  # noqa: F401
+
 from pathlib import Path
 
 import torch
