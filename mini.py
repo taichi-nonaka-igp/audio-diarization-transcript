@@ -4,7 +4,6 @@ import torch
 from pyannote.audio import Audio, Pipeline
 from pyannote.core import Annotation
 from torch import Tensor
-from torch import device as TorchDevice
 from torch import dtype as TorchDtype
 from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
@@ -16,8 +15,18 @@ pyannote_model: str = "pyannote/speaker-diarization-3.1"
 transcription_model: str = "openai/whisper-large-v3"
 
 # デバイス選択とデータ型設定
-device: TorchDevice = torch.device("cpu")
-dtype: TorchDtype = torch.float32
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+    dtype: TorchDtype = torch.float16
+    print(f"Using CUDA device: {torch.cuda.get_device_name(device)}")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+    dtype = torch.float32
+    print("Using MPS device")
+else:
+    device = torch.device("cpu")
+    dtype = torch.float32
+    print("Using CPU device")
 
 # PyannoteパイプラインとWhisperモデル/プロセッサ、Audioハンドラをロード
 pipeline: Pipeline = Pipeline.from_pretrained(pyannote_model).to(device)

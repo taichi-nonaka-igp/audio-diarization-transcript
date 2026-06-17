@@ -9,3 +9,5 @@
 *.aiff
 
 *.csv
+
+__pycache__/

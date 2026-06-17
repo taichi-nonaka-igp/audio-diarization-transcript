@@ -2,10 +2,14 @@ import argparse
 import csv
 import datetime
 import logging
+import os
 import sys
+import tempfile
 import warnings
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+from pydub import AudioSegment
 
 # import torchaudio  # ファイル長取得のためインポート
 import soundfile as sf  # 追加
@@ -23,6 +27,52 @@ logging.basicConfig(
 
 # Hugging Face トークンに関するFutureWarningを抑制
 warnings.filterwarnings("ignore", category=FutureWarning, module="huggingface_hub")
+
+
+def select_compute_device(
+    device_preference: Optional[str] = None,
+) -> tuple[torch.device, torch.dtype]:
+    """利用可能な最適な計算デバイスとデータ型を選択します。"""
+    preference = (device_preference or "auto").lower()
+
+    if preference == "auto":
+        if torch.cuda.is_available():
+            preference = "cuda"
+        elif torch.backends.mps.is_available():
+            preference = "mps"
+        else:
+            preference = "cpu"
+
+    if preference == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA was requested but is not available. "
+                "Check your NVIDIA driver, CUDA toolkit, and PyTorch CUDA build."
+            )
+        device = torch.device("cuda")
+        dtype = torch.float16
+        gpu_name = torch.cuda.get_device_name(device)
+        logging.info(f"Using CUDA device: {gpu_name} (dtype: {dtype})")
+        return device, dtype
+
+    if preference == "mps":
+        if not torch.backends.mps.is_available():
+            raise RuntimeError("MPS was requested but is not available on this system.")
+        device = torch.device("mps")
+        dtype = torch.float32
+        logging.info(f"Using MPS device (dtype: {dtype})")
+        return device, dtype
+
+    if preference == "cpu":
+        device = torch.device("cpu")
+        dtype = torch.float32
+        logging.info(f"Using CPU device (dtype: {dtype})")
+        return device, dtype
+
+    raise ValueError(
+        f"Invalid device preference: {device_preference!r}. "
+        "Use 'auto', 'cuda', 'mps', or 'cpu'."
+    )
 
 
 def format_time(seconds: float) -> str:
@@ -60,6 +110,7 @@ class AudioProcessor:
         pyannote_model_id: str,
         target_sample_rate: int = 16000,
         min_segment_duration: float = 0.3,
+        device_preference: Optional[str] = None,
     ):
         """AudioProcessorを初期化します。"""
         logging.info(f"Initializing AudioProcessor for file: {audio_file}")
@@ -77,30 +128,11 @@ class AudioProcessor:
         self.target_sample_rate = target_sample_rate
         self.min_segment_duration = min_segment_duration  # 閾値を属性として保持
 
-        self.device, self.dtype = self._setup_device()
+        self.device, self.dtype = select_compute_device(device_preference)
         self.pipeline, self.processor, self.model = self._load_models()
         self.audio_handler = self._setup_audio_handler()
         self.audio_duration = self._get_audio_duration()  # ★ファイル長を取得
         logging.info("AudioProcessor initialized successfully.")
-
-    def _setup_device(self) -> tuple[torch.device, torch.dtype]:
-        """デバイスとデータ型を設定します。"""
-        logging.debug("Setting up device and data type...")
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-            dtype = torch.float16
-            logging.info(f"Using CUDA device. Using dtype: {dtype}")
-        elif torch.backends.mps.is_available():
-            device = torch.device("mps")
-            # MPSはfloat16を完全にはサポートしていない場合があるためfloat32が無難
-            dtype = torch.float32
-            logging.info(f"Using MPS device. Using dtype: {dtype}")
-        else:
-            device = torch.device("cpu")
-            dtype = torch.float32
-            logging.info(f"Using CPU device. Using dtype: {dtype}")
-        logging.debug(f"Device set to: {device}, Dtype set to: {dtype}")
-        return device, dtype
 
     def _load_models(
         self,
@@ -112,8 +144,10 @@ class AudioProcessor:
             # Hugging Face Hubからトークンを使ってアクセスする必要がある場合がある
             # pipeline = Pipeline.from_pretrained(self.pyannote_model_id, use_auth_token="YOUR_HF_TOKEN")
             pipeline: Pipeline = Pipeline.from_pretrained(self.pyannote_model_id)
-            pipeline.to(self.device)
-            logging.info("Pyannote pipeline loaded successfully.")
+            pipeline = pipeline.to(self.device)
+            logging.info(
+                f"Pyannote pipeline loaded successfully on {getattr(pipeline, 'device', self.device)}."
+            )
         except Exception as e:
             logging.critical(
                 f"Error loading Pyannote pipeline ({self.pyannote_model_id}): {e}"
@@ -141,7 +175,9 @@ class AudioProcessor:
                 ).to(self.device)
             )
             model.eval()  # 推論モードに設定
-            logging.info("Transcription model loaded successfully.")
+            logging.info(
+                f"Transcription model loaded successfully on {next(model.parameters()).device}."
+            )
         except Exception as e:
             logging.critical(
                 f"Error loading transcription model ({self.transcription_model_id}): {e}"
@@ -194,6 +230,7 @@ class AudioProcessor:
             }
 
         try:
+            self.pipeline = self.pipeline.to(self.device)
             # pipelineに直接ファイルパスを渡す
             diarization = self.pipeline(str(self.audio_file), **diarization_params)
             logging.info("Speaker diarization complete.")
@@ -577,6 +614,33 @@ class AudioProcessor:
             return False
 
 
+def prepare_audio_file(audio_file_path: Path) -> tuple[Path, List[Path]]:
+    """
+    処理用の音声ファイルパスを返します。m4a の場合は一時 wav に変換します。
+
+    Returns:
+        (処理対象の音声パス, 処理後に削除すべき一時ファイルのリスト)
+    """
+    if audio_file_path.suffix.lower() != ".m4a":
+        return audio_file_path, []
+
+    logging.info(f"Input is m4a; converting to wav: {audio_file_path}")
+    fd, temp_path_str = tempfile.mkstemp(
+        suffix=".wav", prefix=f"{audio_file_path.stem}_"
+    )
+    os.close(fd)
+    temp_path = Path(temp_path_str)
+    try:
+        audio = AudioSegment.from_file(str(audio_file_path), format="m4a")
+        audio.export(str(temp_path), format="wav")
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+    logging.info(f"Conversion complete: {temp_path}")
+    return temp_path, [temp_path]
+
+
 def create_transcript_csv_path(audio_file_path: Path) -> Path:
     """
     指定された音声ファイルパスから、指定の命名規則に従った
@@ -645,8 +709,13 @@ if __name__ == "__main__":
         default=0.02,
         help="Minimum duration (seconds) for a segment to be transcribed. Segments shorter than this will be skipped.",
     )
-    # 必要なら他の引数も追加 (例: デバイス指定、トークンなど)
-    # parser.add_argument("--device", type=str, default=None, choices=['cuda', 'cpu', 'mps'], help="Force specific device ('cuda', 'cpu', 'mps'). Auto-detects if not set.")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        choices=["auto", "cuda", "cpu", "mps"],
+        help="Compute device to use. 'auto' selects CUDA, then MPS, then CPU.",
+    )
     # parser.add_argument("--hf_token", type=str, default=None, help="Hugging Face Hub token if required for private models.")
 
     args = parser.parse_args()
@@ -657,6 +726,7 @@ if __name__ == "__main__":
     pyannote_model_id = args.pyannote_model_id
     known_num_speakers = args.num_speakers
     min_segment_duration = args.min_segment_duration
+    device_preference = args.device
 
     # --- 初期チェック ---
     if not audio_file_path.is_file():
@@ -702,20 +772,31 @@ if __name__ == "__main__":
     logging.info(f"Transcription model ID: {transcription_model_id}")
     logging.info(f"Pyannote Diarization model ID: {pyannote_model_id}")
     logging.info(f"Minimum segment duration for transcription: {min_segment_duration}s")
+    logging.info(f"Compute device preference: {device_preference}")
 
     if known_num_speakers is not None:
         logging.info(f"Number of speakers specified: {known_num_speakers}")
     else:
         logging.info("Number of speakers not specified, will estimate automatically.")
 
+    temp_audio_files: List[Path] = []
     try:
+        try:
+            audio_file_for_processing, temp_audio_files = prepare_audio_file(
+                audio_file_path
+            )
+        except Exception as e:
+            logging.critical(f"Critical Error: Failed to convert m4a to wav: {e}")
+            sys.exit(1)
+
         # AudioProcessor のインスタンス化でファイル存在チェックとファイル長取得が行われる
         processor = AudioProcessor(
-            audio_file=audio_file_path,
+            audio_file=audio_file_for_processing,
             output_csv_path=output_csv_path,
             transcription_model_id=transcription_model_id,
             pyannote_model_id=pyannote_model_id,
             min_segment_duration=min_segment_duration,
+            device_preference=device_preference,
         )
 
         success = processor.process_and_save_to_csv(
@@ -741,6 +822,10 @@ if __name__ == "__main__":
             f"A critical error occurred during the main execution: {e}", exc_info=True
         )
         sys.exit(1)
+    finally:
+        for temp_file in temp_audio_files:
+            temp_file.unlink(missing_ok=True)
+            logging.debug(f"Removed temporary audio file: {temp_file}")
 
     logging.info("Script execution finished successfully.")
     sys.exit(0)  # 正常終了
