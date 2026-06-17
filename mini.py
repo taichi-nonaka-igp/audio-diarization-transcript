@@ -10,7 +10,7 @@ from transformers import WhisperForConditionalGeneration, WhisperProcessor
 # 文字起こし対象の音声ファイル
 audio_file: Path = Path(r"C:\Whisper\audio-diarization-transcript\レコーディング.wav")
 # 話者分離を行うモデル
-pyannote_model: str = "pyannote/speaker-diarization-3.1"
+pyannote_model: str = "pyannote/speaker-diarization-community-1"
 # 文字起こしを行うモデル
 transcription_model: str = "openai/whisper-large-v3"
 
@@ -42,7 +42,12 @@ audio_handler: Audio = Audio(sample_rate=16000, mono=True)
 
 
 # --- 2. 話者分離を実行 ---
-diarization: Annotation = pipeline(audio_file, num_speakers=2)
+diarization_output = pipeline(audio_file, num_speakers=2)
+diarization: Annotation = (
+    diarization_output.exclusive_speaker_diarization
+    if hasattr(diarization_output, "exclusive_speaker_diarization")
+    else diarization_output
+)
 
 # diarization.itertracks()で各発話区間(segment)と話者ラベル(speaker)を取得
 for segment, _, speaker in diarization.itertracks(yield_label=True):

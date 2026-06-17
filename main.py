@@ -75,6 +75,28 @@ def select_compute_device(
     )
 
 
+def get_diarization_annotation(diarization_result: Any, use_exclusive: bool = True) -> Any:
+    """pyannote 4.x の DiarizeOutput または 3.x の Annotation から Annotation を取り出します。"""
+    if hasattr(diarization_result, "exclusive_speaker_diarization") and use_exclusive:
+        return diarization_result.exclusive_speaker_diarization
+    if hasattr(diarization_result, "speaker_diarization"):
+        return diarization_result.speaker_diarization
+    return diarization_result
+
+
+def iter_labeled_segments(
+    diarization_result: Any, use_exclusive: bool = True
+) -> List[Tuple[Segment, str]]:
+    """話者分離結果から (Segment, speaker) のリストを返します。"""
+    annotation = get_diarization_annotation(
+        diarization_result, use_exclusive=use_exclusive
+    )
+    return [
+        (segment, speaker)
+        for segment, _, speaker in annotation.itertracks(yield_label=True)
+    ]
+
+
 def format_time(seconds: float) -> str:
     """秒数を HH:MM:SS 形式の文字列に変換します。"""
     delta = datetime.timedelta(seconds=seconds)
@@ -232,13 +254,12 @@ class AudioProcessor:
         try:
             self.pipeline = self.pipeline.to(self.device)
             # pipelineに直接ファイルパスを渡す
-            diarization = self.pipeline(str(self.audio_file), **diarization_params)
+            diarization_output = self.pipeline(str(self.audio_file), **diarization_params)
             logging.info("Speaker diarization complete.")
-            # diarization結果がNoneでないことを確認
-            if diarization is None:
+            if diarization_output is None:
                 logging.warning("Diarization pipeline returned None.")
                 return None
-            return diarization
+            return diarization_output
         except Exception as e:
             logging.error(f"Error during speaker diarization: {e}", exc_info=True)
             return None
@@ -522,8 +543,8 @@ class AudioProcessor:
         """
         logging.info("Starting audio processing and CSV saving pipeline...")
 
-        diarization = self.diarize(known_num_speakers=known_num_speakers)
-        if diarization is None:
+        diarization_output = self.diarize(known_num_speakers=known_num_speakers)
+        if diarization_output is None:
             logging.error("Failed to get diarization results. Aborting processing.")
             return False
 
@@ -540,39 +561,29 @@ class AudioProcessor:
                 csvfile.flush()
                 logging.info(f"Writing results to {self.output_csv_path}...")
 
-                # Pyannote 3.x の .itertracks(yield_label=True) を使う
                 try:
-                    # yield_label=True で (Segment, track_id, speaker_label) のタプルを取得
-                    # イテレータをリストに変換してソートする
-                    segments_with_labels = list(
-                        diarization.itertracks(yield_label=True)
-                    )
+                    labeled_segments = iter_labeled_segments(diarization_output)
                 except Exception as e:
                     logging.error(
                         f"Failed to iterate over diarization tracks: {e}", exc_info=True
                     )
-                    return False  # セグメント取得失敗
+                    return False
 
-                if not segments_with_labels:
+                if not labeled_segments:
                     logging.warning(
                         "No speaker segments detected in the audio by diarization pipeline."
                     )
-                    # 空のCSVファイルは作成されるが、処理自体は成功とする
                     return True
 
-                # 開始時間でソート (Segmentオブジェクトは比較可能)
-                sorted_segments: list[Tuple[Segment, str, str]] = sorted(
-                    segments_with_labels, key=lambda x: x[0].start
-                )
+                sorted_segments = sorted(labeled_segments, key=lambda x: x[0].start)
 
                 logging.info(
                     f"Found {len(sorted_segments)} speaker segments. Starting processing and CSV writing loop."
                 )
 
                 segment: Segment
-                _track_id: str  # 不要だが受け取る必要あり
                 speaker: str
-                for i, (segment, _track_id, speaker) in enumerate(sorted_segments):
+                for i, (segment, speaker) in enumerate(sorted_segments):
                     segment_index = i + 1
                     progress = (segment_index / len(sorted_segments)) * 100
                     logging.info(
@@ -694,8 +705,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pyannote_model_id",
         type=str,
-        default="pyannote/speaker-diarization-3.1",
-        help="Hugging Face ID of the Pyannote diarization model (e.g., 'pyannote/speaker-diarization-3.1').",
+        default="pyannote/speaker-diarization-community-1",
+        help="Hugging Face ID of the Pyannote diarization model (e.g., 'pyannote/speaker-diarization-community-1').",
     )
     parser.add_argument(
         "--num_speakers",

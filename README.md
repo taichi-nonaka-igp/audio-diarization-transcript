@@ -5,7 +5,8 @@
 ## 実行環境
 
 * **Python:** 3.11
-* **主要ライブラリ:** PyTorch, Transformers, pyannote.audio, torchaudio (詳細は `pyproject.toml` を参照し、`uv sync` でインストールされます)
+* **主要ライブラリ:** PyTorch, Transformers, pyannote.audio 4.x, torchaudio, torchcodec (詳細は `pyproject.toml` を参照し、`uv sync` でインストールされます)
+* **システム要件:** FFmpeg（m4a 変換および pyannote.audio 4.x の音声読み込みに使用）
 
 
 ## 環境構築
@@ -22,9 +23,8 @@
 3.  **Hugging Face の設定:**
     * **アクセストークン取得:** Hugging Face Hub にログインし、アクセストークン（READ権限）を取得します。
         * 参考: [Hugging Faceでアクセストークンを取得する方法](https://monomonotech.jp/kurage/memo/m250108_huggingface_get_token)
-    * **モデル利用規約への同意:** Hugging Face Hub上で、以下のモデルの利用規約に同意する必要があります。（スクリプトが内部で依存している可能性があるため）
-        * [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
-        * [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)
+    * **モデル利用規約への同意:** Hugging Face Hub上で、以下のモデルの利用規約に同意する必要があります。
+        * [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1)
     * **Hugging Face CLI ログイン:** コマンドラインから Hugging Face にログインし、取得したトークンを設定します。`uv` 環境内で `huggingface-cli` を実行します。
         ```bash
         uv run huggingface-cli login
@@ -73,9 +73,9 @@ uv run main.py <audio_file_path> [OPTIONS]
 
 * **`--pyannote_model_id MODEL_ID` (オプション):**
     * 話者分離に使用する Hugging Face の Pyannote モデルIDを指定します。
-    * デフォルト: `pyannote/speaker-diarization-3.1`
+    * デフォルト: `pyannote/speaker-diarization-community-1`
     * 他のモデルを使用する場合は、そのモデルIDを指定します。
-    * 例: `--pyannote_model_id pyannote/speaker-diarization-2.1` (古いモデルなど)
+    * 例: `--pyannote_model_id pyannote/speaker-diarization-3.1` (旧モデル)
 
 * **`--num_speakers N` (オプション):**
     * 音声ファイルに含まれる話者の数を整数で指定します。
@@ -96,7 +96,7 @@ uv run main.py <audio_file_path> [OPTIONS]
     uv run main.py path/to/your/audio.mp3
     ```
     * 出力ファイルはカレントディレクトリに `audio-transcription-YYYYMMDDHHMMSS.csv` のような名前で生成されます。
-    * Whisper-large-v3 と pyannote/speaker-diarization-3.1 を使用し、話者数は自動推定されます。
+    * Whisper-large-v3 と pyannote/speaker-diarization-community-1 を使用し、話者数は自動推定されます。
 
 2.  **オプションを指定して実行 (話者数を指定して精度向上を期待):**
     ```bash
